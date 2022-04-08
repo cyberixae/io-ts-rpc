@@ -16,9 +16,12 @@ import * as Headers_ from './headers';
 import { URI, URITemplate } from './uri-template';
 import * as URITemplate_ from './uri-template';
 
-type FlatResponse = {
-  headers: Headers;
-  body: Body;
+type HTTPRequest = { url: URI; method: Method; headers: Headers; body: Body };
+type HTTPResponse = { headers: Headers; body: Body };
+
+type HTTPExchange = {
+  request: HTTPRequest;
+  response: HTTPResponse;
 };
 
 export type Tunnel<I, O> = (i: I) => TaskThese<Errors, O>;
@@ -107,44 +110,48 @@ export function tunnel<
     );
   }
 
-  function parseBody(body: Body): Either<Errors, TS> {
+  function parseResponseBody({ request, response }: HTTPExchange): Either<Errors, TS> {
     return pipe(
-      validator(Response, 'json').decodeEither(body),
+      validator(Response, 'json').decodeEither(response.body),
       Either_.mapLeft((errors: Array<string>) =>
         singleError('io-ts-rpc client failed to parse response body', {
-          input: JSON.parse(JSON.stringify(body)),
           errors: errors,
+          request,
+          response,
         }),
       ),
     );
   }
 
-  function parseHeaders(headers: Headers): These<Errors, Headers> {
+  function parseResponseHeaders({
+    request,
+    response,
+  }: HTTPExchange): These<Errors, Headers> {
     return pipe(
-      headers,
-      validator(ResponseHeaders).decodeEither,
+      validator(ResponseHeaders).decodeEither(response.headers),
       Either_.fold(
         (errors: Array<string>) =>
           These_.both(
             singleError('io-ts-rpc client failed to parse response headers', {
-              input: JSON.parse(JSON.stringify(headers)),
               errors: errors,
+              request,
+              response,
             }),
-            headers,
+            response.headers,
           ),
-        (_targetHints) => These_.right(headers),
+        (_targetHints) => These_.right(response.headers),
       ),
     );
   }
 
-  function parseResponse({ body, headers }: FlatResponse): These<Errors, TS> {
+  function parseResponse(exchange: HTTPExchange): These<Errors, TS> {
     return pipe(
-      parseBody(body),
+      parseResponseBody(exchange),
       Either_.fold(
         (err) => These_.left(err),
         (body) =>
           pipe(
-            parseHeaders(headers),
+            parseResponseHeaders(exchange),
             These_.map((_headers) => body),
           ),
       ),
@@ -157,36 +164,38 @@ export function tunnel<
         url: encodeUrl(hrefTemplate, target),
         method: encodeMethod(method),
         headers: encodeHeaders(headers),
-        request: encodeRequest(request),
+        body: encodeRequest(request),
       },
       Apply_.sequenceS(Either_.Apply),
       Task_.of,
-      TaskEither_.chain(
-        (encoded: { url: URI; method: Method; headers: Headers; request: Body }) =>
-          TaskEither_.tryCatch(
-            async (): Promise<FlatResponse> => {
-              const result = await fetch(encoded.url, {
-                method: encoded.method,
-                headers: encoded.headers,
-                body: encoded.request,
-              });
-              const implicit: Headers = result.ok ? { allow: encoded.method } : {};
-              const explicit: Headers = Headers_.fromFetchResult(result);
-              return {
+      TaskEither_.chain((encoded: HTTPRequest) =>
+        TaskEither_.tryCatch(
+          async (): Promise<HTTPExchange> => {
+            const result = await fetch(encoded.url, {
+              method: encoded.method,
+              headers: encoded.headers,
+              body: encoded.body,
+            });
+            const implicit: Headers = result.ok ? { allow: encoded.method } : {};
+            const explicit: Headers = Headers_.fromFetchResult(result);
+            return {
+              request: encoded,
+              response: {
                 headers: {
                   ...implicit,
                   ...explicit,
                 },
                 body: await result.text(),
-              };
-            },
-            (error): Errors =>
-              singleError('io-ts-rpc client failed to fetch response', {
-                title: String(error),
-                details: error,
-                request: request,
-              }),
-          ),
+              },
+            };
+          },
+          (error): Errors =>
+            singleError('io-ts-rpc client failed to fetch response', {
+              title: String(error),
+              details: error,
+              request: request,
+            }),
+        ),
       ),
       Task_.map(Either_.fold(These_.left, parseResponse)),
     );
