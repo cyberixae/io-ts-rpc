@@ -1,7 +1,7 @@
 import { Either } from 'fp-ts/lib/Either';
 import * as Either_ from 'fp-ts/lib/Either';
 import { pipe } from 'fp-ts/lib/function';
-import { parse } from 'url-template';
+import urlTemplate from 'url-template';
 
 import { Errors, singleError } from './err';
 
@@ -13,7 +13,7 @@ export function expand(vars: URIVariables): (t: URITemplate) => Either<Errors, U
   return (template) =>
     pipe(
       Either_.tryCatch(
-        () => parse(template),
+        () => urlTemplate.parse(template),
         (errors) =>
           singleError('io-ts-rpc client failed to parse url template', {
             template,
